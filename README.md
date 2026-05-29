@@ -25,8 +25,9 @@ Debian (trixie) で丸ごと上書きする**ためのスクリプトです。
   apt / dnf / yum / zypper / pacman を自動判別して `kexec-tools` を入れます。
 - **設定ファイル（TOML）で構成を管理。** 初期パッケージ・Docker/Tailscale の
   有無・追加コマンドなどを宣言的に指定でき、再現性があります。
-- **稼働中の Linux からネットワーク設定を自動取得**（既定 `mode = "auto"`）。
-  現在の IPv4 設定を読み取り、DHCP が無い VPS でも静的設定として引き継げます。
+- **稼働中の Linux から設定を自動取得**。ネットワーク（現在の IPv4 設定 →
+  DHCP が無い VPS でも静的設定として引き継ぎ）に加え、コードネーム・
+  タイムゾーン・ロケールも現在のシステムから取り込みます（いずれも `auto`）。
 - **アーキテクチャ自動判別**（amd64 / arm64）。
 - **インストール後の初回起動で Docker / Tailscale を自動導入**し、
   ansible ユーザーを別途作成します（ネットワークと apt が完全に動く状態で
@@ -46,6 +47,12 @@ python3 bootstrap.py check  -c config.toml         # 確認
 python3 bootstrap.py check  -c config.toml --show-files  # 生成物も表示
 sudo python3 bootstrap.py run -c config.toml       # 実行（ディスクを上書き）
 ```
+
+`wizard` は**必須項目だけ**を質問します（ホスト名 / ディスク / ネットワーク方式 /
+メインユーザーとその SSH 鍵 / ansible ユーザーの要否と鍵 / Tailscale の要否）。
+コードネーム・タイムゾーン・ロケールは `run` 時に稼働中システムから取得し、Docker
+は既定で導入します。これらや初期パッケージなどの細部は、生成された TOML を手で
+編集して変えられます。
 
 ## クイックスタート
 
@@ -81,9 +88,11 @@ sudo python3 bootstrap.py run -c config.toml       # 実行（ディスクを上
 
 ```toml
 [debian]
-suite = "trixie"          # コードネーム
+suite = "auto"            # auto=稼働中システムのコードネーム / trixie / bookworm ...
 arch = "auto"             # auto | amd64 | arm64
-timezone = "Asia/Tokyo"
+locale = "auto"           # auto=稼働中システムの LANG（取れなければ en_US.UTF-8）
+timezone = "auto"         # auto=稼働中システムの TZ（取れなければ Etc/UTC）
+keymap = "us"             # VPS では基本このまま
 
 [target]
 disk = "auto"             # auto で自動検出（/dev/vda → sda → nvme0n1）

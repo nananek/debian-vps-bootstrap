@@ -35,6 +35,9 @@ from getpass import getpass
 
 WORKDIR = "/root/debian-bootstrap"
 _ARCH_MAP = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
+FALLBACK_SUITE = "trixie"     # 稼働中が Debian でない等でコードネームを取れない場合
+FALLBACK_TIMEZONE = "Etc/UTC"
+FALLBACK_LOCALE = "en_US.UTF-8"
 
 
 # ===========================================================================
@@ -67,6 +70,81 @@ def resolve_arch(value: str) -> str:
     if arch is None:
         die(f"アーキテクチャ自動判別に失敗: {platform.machine()}（amd64/arm64 のみ対応）")
     return arch
+
+
+# --- 稼働中の Linux からシステム設定（コードネーム/TZ/ロケール）を読み取る ---
+def _os_release() -> dict:
+    out = {}
+    try:
+        with open("/etc/os-release") as fh:
+            for line in fh:
+                if "=" in line:
+                    k, v = line.rstrip("\n").split("=", 1)
+                    out[k] = v.strip().strip('"')
+    except OSError:
+        pass
+    return out
+
+
+def detect_suite() -> str:
+    """稼働中が Debian ならそのコードネームを返す。それ以外/不明なら空。"""
+    d = _os_release()
+    return d.get("VERSION_CODENAME", "") if d.get("ID") == "debian" else ""
+
+
+def detect_timezone() -> str:
+    try:
+        with open("/etc/timezone") as fh:
+            tz = fh.read().strip()
+        if tz:
+            return tz
+    except OSError:
+        pass
+    try:
+        link = os.readlink("/etc/localtime")
+        if "zoneinfo/" in link:
+            return link.split("zoneinfo/", 1)[1]
+    except OSError:
+        pass
+    return ""
+
+
+def _meaningful_locale(v: str) -> bool:
+    # C / POSIX / C.UTF-8 は「地域ロケール未選択」。無人インストールでは既定へ倒す。
+    return bool(v) and v not in ("C", "POSIX") and not v.upper().startswith("C.") and "." in v
+
+
+def detect_locale() -> str:
+    for var in ("LANG", "LC_ALL", "LC_CTYPE"):
+        v = os.environ.get(var, "")
+        if _meaningful_locale(v):
+            return v
+    for path in ("/etc/default/locale", "/etc/locale.conf"):
+        try:
+            with open(path) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line.startswith("LANG="):
+                        v = line.split("=", 1)[1].strip().strip('"')
+                        if _meaningful_locale(v):
+                            return v
+        except OSError:
+            continue
+    return ""
+
+
+def resolve_config(cfg: dict) -> dict:
+    """debian.suite/arch/timezone/locale の "auto" を具体値へ解決した cfg のコピーを返す。"""
+    rcfg = copy.deepcopy(cfg)
+    d = rcfg["debian"]
+    d["arch"] = resolve_arch(d.get("arch", "auto"))
+    if d.get("suite", "auto") == "auto":
+        d["suite"] = detect_suite() or FALLBACK_SUITE
+    if d.get("timezone", "auto") == "auto":
+        d["timezone"] = detect_timezone() or FALLBACK_TIMEZONE
+    if d.get("locale", "auto") == "auto":
+        d["locale"] = detect_locale() or FALLBACK_LOCALE
+    return rcfg
 
 
 def detect_disk() -> str:
@@ -234,11 +312,13 @@ def ensure_prereqs() -> None:
 def default_config() -> dict:
     return {
         "debian": {
-            "suite": "trixie",
-            "arch": "auto",
+            "suite": "auto",        # auto = 稼働中システムのコードネーム（取れなければ trixie）
+            "arch": "auto",         # auto = uname から判別
+            "locale": "auto",       # auto = 稼働中システムの LANG（取れなければ en_US.UTF-8）
+            "timezone": "auto",     # auto = 稼働中システムの TZ（取れなければ Etc/UTC）
+            "keymap": "us",         # VPS では基本このまま。必要なら手で変更
             "mirror_host": "deb.debian.org",
             "mirror_dir": "/debian",
-            "timezone": "Asia/Tokyo",
         },
         "target": {"disk": "auto"},
         "network": {
@@ -413,12 +493,15 @@ def dump_config(cfg: dict) -> str:
 # `bootstrap.py run -c このファイル` でこの内容に従ってインストールする。
 # パスワードは平文では保存しない。"prompt" にすると run 実行時に対話入力する。
 
+# suite/locale/timezone は "auto" で稼働中システムから取得（取れなければ既定値）。
 [debian]
-suite = "{d['suite']}"
+suite = "{d['suite']}"              # auto | trixie | bookworm ...
 arch = "{d['arch']}"                  # auto | amd64 | arm64
+locale = "{d['locale']}"            # auto | en_US.UTF-8 | ja_JP.UTF-8 ...
+timezone = "{d['timezone']}"          # auto | Asia/Tokyo | Etc/UTC ...
+keymap = "{d['keymap']}"                 # VPS では基本このまま
 mirror_host = "{d['mirror_host']}"
 mirror_dir = "{d['mirror_dir']}"
-timezone = "{d['timezone']}"
 
 [target]
 disk = "{cfg['target']['disk']}"               # auto で自動検出（実行時に確認あり）
@@ -504,8 +587,8 @@ def build_preseed(cfg: dict, disk: str, user_pw_hash: str, net) -> bytes:
     netcfg = _build_netcfg(cfg, net)
     text = f"""\
 # ---- ロケール / キーボード -------------------------------------------------
-d-i debian-installer/locale string en_US.UTF-8
-d-i keyboard-configuration/xkb-keymap select us
+d-i debian-installer/locale string {d['locale']}
+d-i keyboard-configuration/xkb-keymap select {d['keymap']}
 
 {netcfg}
 # ---- ミラー ----------------------------------------------------------------
@@ -849,8 +932,11 @@ def cmd_wizard(args) -> None:
     print("（ここでは設定ファイルを書き出すだけです。インストールはしません）\n")
     cfg = default_config()
 
-    cfg["debian"]["suite"] = prompt_nonempty("Debian コードネーム", "trixie")
-    cfg["debian"]["timezone"] = prompt_nonempty("タイムゾーン", "Asia/Tokyo")
+    # コードネーム / タイムゾーン / ロケールは run 時に稼働中システムから取得する
+    # （= "auto"）。気に入らなければ生成後の TOML を手で直す方針。
+    print("コードネーム・タイムゾーン・ロケールは実行時に現在のシステムから取得します。")
+    print("（変更したい場合は生成された TOML を手で編集してください）\n")
+
     cfg["host"]["hostname"] = prompt_nonempty("ホスト名", "debian-vps")
     cfg["target"]["disk"] = prompt_nonempty("対象ディスク（auto で自動検出）", "auto")
 
@@ -892,7 +978,7 @@ def cmd_wizard(args) -> None:
         else:
             cfg["ansible"]["password_hash"] = "prompt"
 
-    cfg["firstboot"]["docker"] = prompt_yesno("Docker を導入する？", True)
+    # Docker は既定で導入（聞かない）。不要なら TOML の firstboot.docker = false に。
     cfg["firstboot"]["tailscale"] = prompt_yesno("Tailscale を導入する？", True)
 
     out = args.output
@@ -925,8 +1011,10 @@ def _plan_summary(cfg: dict, arch: str, disk_note: str, net) -> str:
             netline += "  (稼働中の Linux から自動取得)"
     else:
         netline = "dhcp"
+    d = cfg["debian"]
     return (
-        f"  Debian          : {cfg['debian']['suite']} ({arch})\n"
+        f"  Debian          : {d['suite']} ({arch})\n"
+        f"  ロケール/TZ     : {d['locale']} / {d['timezone']}\n"
         f"  ホスト名        : {cfg['host']['hostname']}\n"
         f"  ネットワーク    : {netline}\n"
         f"  対象ディスク    : {disk_note}\n"
@@ -943,14 +1031,15 @@ def _plan_summary(cfg: dict, arch: str, disk_note: str, net) -> str:
 def cmd_check(args) -> None:
     cfg = load_config(args.config)
     errs = validate_config(cfg)
-    arch = resolve_arch(cfg["debian"]["arch"])
-    net = resolve_network(cfg)
-    disk_cfg = cfg["target"]["disk"]
+    rcfg = resolve_config(cfg)
+    arch = rcfg["debian"]["arch"]
+    net = resolve_network(rcfg)
+    disk_cfg = rcfg["target"]["disk"]
     disk_note = (f"auto → 実行ホストで検出（現在の候補: {detect_disk() or '不明'}）"
                  if disk_cfg == "auto" else disk_cfg)
 
     print("=== 設定プラン ===")
-    print(_plan_summary(cfg, arch, disk_note, net))
+    print(_plan_summary(rcfg, arch, disk_note, net))
     print()
     if errs:
         print("=== 検証エラー ===")
@@ -962,9 +1051,9 @@ def cmd_check(args) -> None:
     if args.show_files:
         disk = detect_disk() if disk_cfg == "auto" else disk_cfg
         print("\n=== 生成される preseed.cfg ===")
-        print(build_preseed(cfg, disk or "/dev/vda", "$6$EXAMPLE$EXAMPLE", net).decode())
+        print(build_preseed(rcfg, disk or "/dev/vda", "$6$EXAMPLE$EXAMPLE", net).decode())
         print("=== 生成される firstboot.sh ===")
-        print(build_firstboot(cfg))
+        print(build_firstboot(rcfg))
 
     if errs:
         sys.exit(1)
@@ -980,18 +1069,19 @@ def cmd_run(args) -> None:
             print(f"[設定エラー] {e}", file=sys.stderr)
         die("設定を修正してください（`check` で確認できます）。")
 
-    arch = resolve_arch(cfg["debian"]["arch"])
-    net = resolve_network(cfg)
-    disk = detect_disk() if cfg["target"]["disk"] == "auto" else cfg["target"]["disk"]
+    rcfg = resolve_config(cfg)
+    arch = rcfg["debian"]["arch"]
+    net = resolve_network(rcfg)
+    disk = detect_disk() if rcfg["target"]["disk"] == "auto" else rcfg["target"]["disk"]
     if not disk:
         die("対象ディスクを自動検出できませんでした。config の target.disk を明示してください。")
 
     ensure_prereqs()
 
     # 必要ならパスワードを対話入力
-    user_pw_hash = resolve_password(cfg, "user", interactive=True)
-    ansible_pw_hash = (resolve_password(cfg, "ansible", interactive=True)
-                       if cfg["ansible"]["enabled"] else "")
+    user_pw_hash = resolve_password(rcfg, "user", interactive=True)
+    ansible_pw_hash = (resolve_password(rcfg, "ansible", interactive=True)
+                       if rcfg["ansible"]["enabled"] else "")
 
     # 最終確認（破壊的）
     if have("lsblk"):
@@ -999,26 +1089,26 @@ def cmd_run(args) -> None:
         subprocess.run(["lsblk", "-do", "NAME,SIZE,MODEL"], check=False)
         print("------------------------------")
     print("\n以下の内容で実行します:")
-    print(_plan_summary(cfg, arch, disk, net))
+    print(_plan_summary(rcfg, arch, disk, net))
     print(f"\n!!! {disk} の全データが消去されます。元の OS は復旧できません。!!!")
     if input(f"続行するには対象ディスク名をそのまま入力 ({disk}): ").strip() != disk:
         die("確認が一致しないため中止しました。")
 
     # payload 組み立て
     payload = {
-        "payload/firstboot.sh": build_firstboot(cfg).encode(),
+        "payload/firstboot.sh": build_firstboot(rcfg).encode(),
         "payload/firstboot.service": build_firstboot_service(),
-        "payload/sshd_hardening.conf": build_sshd_hardening(cfg),
-        "payload/user_authorized_keys": ("\n".join(cfg["user"]["ssh_authorized_keys"]) + "\n").encode(),
+        "payload/sshd_hardening.conf": build_sshd_hardening(rcfg),
+        "payload/user_authorized_keys": ("\n".join(rcfg["user"]["ssh_authorized_keys"]) + "\n").encode(),
     }
-    if cfg["ansible"]["enabled"]:
+    if rcfg["ansible"]["enabled"]:
         payload["payload/bootstrap.env"] = f"ANSIBLE_PW_HASH='{ansible_pw_hash}'\n".encode()
         payload["payload/ansible_authorized_keys"] = (
-            "\n".join(cfg["ansible"]["ssh_authorized_keys"]) + "\n"
+            "\n".join(rcfg["ansible"]["ssh_authorized_keys"]) + "\n"
         ).encode()
 
     # ブートイメージ取得・生成
-    d = cfg["debian"]
+    d = rcfg["debian"]
     base = (f"http://{d['mirror_host']}{d['mirror_dir']}/dists/{d['suite']}/main/"
             f"installer-{arch}/current/images/netboot/debian-installer/{arch}")
     os.makedirs(WORKDIR, exist_ok=True)
@@ -1027,7 +1117,7 @@ def cmd_run(args) -> None:
 
     with open(kernel_path, "wb") as fh:
         fh.write(download(f"{base}/linux"))
-    preseed = build_preseed(cfg, disk, user_pw_hash, net)
+    preseed = build_preseed(rcfg, disk, user_pw_hash, net)
     info("preseed を埋め込んだ initrd を生成中")
     new_initrd = build_new_initrd(download(f"{base}/initrd.gz"), preseed, payload)
     with open(initrd_path, "wb") as fh:

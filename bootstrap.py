@@ -995,7 +995,7 @@ def cmd_wizard(args) -> None:
     with open(out, "w", encoding="utf-8") as fh:
         fh.write(dump_config(cfg))
     print(f"\n設定を書き出しました: {out}")
-    print(f"内容を確認・編集してから次を実行してください:")
+    print("内容を確認・編集してから次を実行してください:")
     print(f"  sudo python3 {os.path.basename(sys.argv[0])} check -c {out}")
     print(f"  sudo python3 {os.path.basename(sys.argv[0])} run   -c {out}")
 

@@ -4,3 +4,4 @@ __pycache__/
 # wizard が生成する設定（SSH 鍵やハッシュを含みうる）。サンプルは examples/ に置く
 /config.toml
 /*.toml
+!/ruff.toml

@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+# 既定のトークンは読み取りのみ（最小権限）。CI は何も書き込まない。
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -13,8 +17,8 @@ jobs:
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     name: test (py${{ matrix.python-version }})
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       # 標準ライブラリのみで動くツールなので依存インストールは不要。
@@ -25,8 +29,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - name: Install ruff

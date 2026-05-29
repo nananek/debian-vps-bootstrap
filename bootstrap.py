@@ -82,7 +82,7 @@ def _os_release() -> dict:
                     k, v = line.rstrip("\n").split("=", 1)
                     out[k] = v.strip().strip('"')
     except OSError:
-        pass
+        pass  # /etc/os-release が無い/読めない OS でも空 dict で続行（呼び出し側が既定へ倒す）
     return out
 
 
@@ -99,13 +99,13 @@ def detect_timezone() -> str:
         if tz:
             return tz
     except OSError:
-        pass
+        pass  # /etc/timezone が無ければ次の /etc/localtime 経由の判定にフォールバック
     try:
         link = os.readlink("/etc/localtime")
         if "zoneinfo/" in link:
             return link.split("zoneinfo/", 1)[1]
     except OSError:
-        pass
+        pass  # どちらの方法でも取れなければ空を返す（呼び出し側が既定 TZ を使う）
     return ""
 
 
@@ -992,6 +992,8 @@ def cmd_wizard(args) -> None:
     out = args.output
     if os.path.exists(out) and not prompt_yesno(f"{out} を上書きする？", False):
         die("中止しました。")
+    # password_hash には平文ではなく SHA-512 crypt ハッシュ（$6$...）か "prompt" のみが入る。
+    # 平文パスワードはここに書き出さない（CodeQL の clear-text 警告は誤検知）。
     with open(out, "w", encoding="utf-8") as fh:
         fh.write(dump_config(cfg))
     print(f"\n設定を書き出しました: {out}")
@@ -1141,7 +1143,7 @@ def cmd_run(args) -> None:
         with open("/proc/sys/vm/drop_caches", "w") as fh:
             fh.write("3\n")
     except OSError:
-        pass
+        pass  # キャッシュ解放は任意の保険。書けなくても kexec 遷移には影響しない
 
     print("\nkexec -e でインストーラへ遷移します。完了後は自動再起動し Debian が起動します。")
     print("初回起動時の処理ログは新システムの /var/log/firstboot.log です。")

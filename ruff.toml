@@ -1,0 +1,11 @@
+# bootstrap.py は「標準ライブラリのみ・1 ファイル」を旨とするため、ruff は
+# バグに直結する最小ルールだけを有効化し、スタイル論争には踏み込まない。
+target-version = "py39"
+line-length = 100
+
+[lint]
+# E4=import, E7=文の書き方, E9=構文エラー, F=pyflakes(未使用・未定義), B=bugbear
+select = ["E4", "E7", "E9", "F", "B"]
+# E702(セミコロン複文)は bootstrap.py が意図的に使うコンパクト記法なので除外。
+# crypt / tomllib の遅延 import は意図的（環境差吸収）。各所で noqa 済み。
+ignore = ["E702"]

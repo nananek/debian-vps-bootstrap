@@ -108,7 +108,8 @@ password_hash = "prompt"
 ssh_authorized_keys = ["ssh-ed25519 AAAA... ansible@control"]
 
 [packages]                # d-i 段で入れる最小パッケージ（openssh-server は必須）
-include = ["openssh-server", "sudo", "curl", "ca-certificates", "gnupg"]
+# ansible.enabled = true のとき python3 は自動追加される（Ansible 管理に必須）
+include = ["openssh-server", "sudo", "git", "curl", "ca-certificates", "gnupg"]
 
 [firstboot]               # 初回起動後に行う処理
 docker = true
@@ -138,7 +139,8 @@ permit_root_login = false         # root SSH オフ
   ローカルコンソールから救済ログインする用途に残ります。
 - **ansible ユーザー**（任意）: SSH 鍵でログイン、sudo はパスワード必須（通常 sudo）、
   docker グループ所属。
-- **パッケージ**: d-i 段で `standard` タスク + `packages.include`。初回起動後に Docker
+- **パッケージ**: d-i 段で `standard` タスク + `packages.include`（既定で `git` 入り。
+  ansible ユーザーを作る構成では `python3` も自動で含めます）。初回起動後に Docker
   （`docker-ce` 一式 + buildx / compose）・Tailscale・`apt_packages`・`run` を処理。
 
 ## 前提・制約

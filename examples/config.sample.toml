@@ -56,8 +56,9 @@ ssh_authorized_keys = [
 
 # d-i 段で入れる最小パッケージ（standard タスク + これら）。
 # openssh-server は外さないこと（外すと再インストール後にログインできなくなる）。
+# ansible.enabled = true のときは python3 が自動で追加される（Ansible 管理に必須）。
 [packages]
-include = ["openssh-server", "sudo", "curl", "ca-certificates", "gnupg", "vim", "tmux"]
+include = ["openssh-server", "sudo", "git", "curl", "ca-certificates", "gnupg", "vim", "tmux"]
 
 # 初回起動後（ネットワーク・apt が動く状態）に一度だけ行う処理。
 [firstboot]

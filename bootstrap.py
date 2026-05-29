@@ -343,7 +343,7 @@ def default_config() -> dict:
             "ssh_authorized_keys": [],
         },
         "packages": {
-            "include": ["openssh-server", "sudo", "curl", "ca-certificates", "gnupg"],
+            "include": ["openssh-server", "sudo", "git", "curl", "ca-certificates", "gnupg"],
         },
         "firstboot": {
             "docker": True,
@@ -581,9 +581,17 @@ def _build_netcfg(cfg: dict, net) -> str:
     )
 
 
+def effective_packages(cfg: dict) -> list:
+    """d-i 段で入れるパッケージ。ansible 管理ノードには python3 を必ず含める。"""
+    pkgs = list(cfg["packages"]["include"])
+    if cfg["ansible"]["enabled"] and "python3" not in pkgs:
+        pkgs.append("python3")  # Ansible モジュールはターゲット上で Python を実行する
+    return pkgs
+
+
 def build_preseed(cfg: dict, disk: str, user_pw_hash: str, net) -> bytes:
     d, u = cfg["debian"], cfg["user"]
-    include = " ".join(cfg["packages"]["include"])
+    include = " ".join(effective_packages(cfg))
     netcfg = _build_netcfg(cfg, net)
     text = f"""\
 # ---- ロケール / キーボード -------------------------------------------------
@@ -1020,7 +1028,7 @@ def _plan_summary(cfg: dict, arch: str, disk_note: str, net) -> str:
         f"  対象ディスク    : {disk_note}\n"
         f"  メインユーザー  : {cfg['user']['name']} (SSH鍵のみ/sudo)\n"
         f"  ansible ユーザー: {ans}\n"
-        f"  d-i パッケージ  : {', '.join(cfg['packages']['include'])}\n"
+        f"  d-i パッケージ  : {', '.join(effective_packages(cfg))}\n"
         f"  初回起動後      : {', '.join(actions) or '（なし）'}\n"
         f"  SSH             : PasswordAuth="
         f"{'yes' if cfg['ssh']['password_authentication'] else 'no'} / "

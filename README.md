@@ -25,6 +25,8 @@ Debian (trixie) で丸ごと上書きする**ためのスクリプトです。
   apt / dnf / yum / zypper / pacman を自動判別して `kexec-tools` を入れます。
 - **設定ファイル（TOML）で構成を管理。** 初期パッケージ・Docker/Tailscale の
   有無・追加コマンドなどを宣言的に指定でき、再現性があります。
+- **稼働中の Linux からネットワーク設定を自動取得**（既定 `mode = "auto"`）。
+  現在の IPv4 設定を読み取り、DHCP が無い VPS でも静的設定として引き継げます。
 - **アーキテクチャ自動判別**（amd64 / arm64）。
 - **インストール後の初回起動で Docker / Tailscale を自動導入**し、
   ansible ユーザーを別途作成します（ネットワークと apt が完全に動く状態で
@@ -85,6 +87,11 @@ timezone = "Asia/Tokyo"
 
 [target]
 disk = "auto"             # auto で自動検出（/dev/vda → sda → nvme0n1）
+
+[network]
+mode = "auto"             # auto | static | dhcp
+# static のとき: address = "203.0.113.10/24", gateway = "203.0.113.1",
+#                nameservers = ["1.1.1.1"]
 
 [host]
 hostname = "debian-vps"
@@ -156,10 +163,25 @@ permit_root_login = false
 sudo tailscale up
 ```
 
+### ネットワーク
+
+`network.mode` で 3 通りから選べます。
+
+- **`auto`（既定）**: `run` / `check` を実行したその Linux の IPv4 実効設定
+  （デフォルトルートのインタフェース・IP・ネットマスク・ゲートウェイ・DNS）を
+  読み取り、取得できれば**静的設定として新システムへ焼き込みます**。取得できな
+  ければ DHCP にフォールバックします。検出は `/proc/net/route`・ioctl・
+  `resolv.conf` を使い、外部コマンドには依存しません（systemd-resolved の
+  スタブ `127.0.0.53` は除外し、`/run/systemd/resolve/resolv.conf` の上流を優先）。
+- **`static`**: `[network]` の `address`（`"IP/CIDR"` 表記も可）・`gateway`・
+  `netmask`/`prefix`・`nameservers` をそのまま使います。
+- **`dhcp`**: インストーラに DHCP させます。
+
+DHCP が無い／静的 IP 固定の VPS でも、`auto` のままで現在の疎通設定を引き継げます。
+IPv6 の自動取り込みは未対応です（必要なら `firstboot.run` で設定可能）。
+
 ## 前提・制約
 
-- **ネットワークは DHCP 前提**です（`network.mode = "dhcp"`）。静的 IP 固定の
-  VPS では preseed の `netcfg` 段で停止します（静的対応は今後）。
 - 対応アーキテクチャは **amd64 / arm64**。
 - `run` は root 権限と、`/proc/sys/vm/drop_caches` が書ける一般的な Linux が前提。
 - 設定の読み込み（`check` / `run`）は Python 3.11+ の `tomllib` を使います。

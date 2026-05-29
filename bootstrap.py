@@ -26,6 +26,8 @@ import gzip
 import os
 import platform
 import shutil
+import socket
+import struct
 import subprocess
 import sys
 import urllib.request
@@ -75,6 +77,112 @@ def detect_disk() -> str:
         except OSError:
             continue
     return ""
+
+
+# --- 稼働中の Linux からネットワーク設定を読み取る（標準ライブラリのみ） -----
+def _ipv4_default_route():
+    """デフォルトルートの (インタフェース名, ゲートウェイ) を /proc から得る。"""
+    try:
+        with open("/proc/net/route") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return None, None
+    for line in lines[1:]:
+        f = line.split()
+        if len(f) < 4:
+            continue
+        iface, dest, gw, flags = f[0], f[1], f[2], int(f[3], 16)
+        if dest == "00000000" and (flags & 0x2):  # デフォルト経路 & RTF_GATEWAY
+            return iface, socket.inet_ntoa(struct.pack("<L", int(gw, 16)))
+    return None, None
+
+
+def _ipv4_addr_mask(iface: str):
+    """インタフェースの IPv4 アドレスとネットマスクを ioctl で得る。"""
+    try:
+        import fcntl  # Unix 専用（標準ライブラリ）
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        ifr = struct.pack("256s", iface.encode()[:15])
+        addr = socket.inet_ntoa(fcntl.ioctl(s.fileno(), 0x8915, ifr)[20:24])  # SIOCGIFADDR
+        mask = socket.inet_ntoa(fcntl.ioctl(s.fileno(), 0x891B, ifr)[20:24])  # SIOCGIFNETMASK
+        return addr, mask
+    except Exception:
+        return None, None
+
+
+def _nameservers():
+    """resolv.conf から上流 DNS を得る。systemd-resolved のスタブ(127.x)は除外。"""
+    ns: list = []
+    for path in ("/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"):
+        try:
+            with open(path) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line.startswith("nameserver"):
+                        parts = line.split()
+                        if len(parts) >= 2 and ":" not in parts[1] and not parts[1].startswith("127."):
+                            ns.append(parts[1])
+        except OSError:
+            continue
+        if ns:
+            break
+    seen, out = set(), []
+    for x in ns:
+        if x not in seen:
+            seen.add(x); out.append(x)
+    return out
+
+
+def detect_network():
+    """現在の IPv4 実効設定を返す。取れなければ None。"""
+    iface, gw = _ipv4_default_route()
+    if not iface:
+        return None
+    addr, mask = _ipv4_addr_mask(iface)
+    if not addr or not mask:
+        return None
+    return {"interface": iface, "address": addr, "netmask": mask,
+            "gateway": gw or "", "nameservers": _nameservers()}
+
+
+def _netmask_to_prefix(mask: str) -> int:
+    return sum(bin(int(o)).count("1") for o in mask.split("."))
+
+
+def _prefix_to_netmask(prefix) -> str:
+    m = (0xFFFFFFFF << (32 - int(prefix))) & 0xFFFFFFFF
+    return socket.inet_ntoa(struct.pack(">L", m))
+
+
+def _finalize_static(p: dict) -> dict:
+    """static パラメータを正規化（CIDR 分解・prefix→netmask・DNS 既定）。"""
+    addr, mask = p.get("address", ""), p.get("netmask", "")
+    if "/" in addr:
+        addr, cidr = addr.split("/", 1)
+        mask = mask or _prefix_to_netmask(cidr)
+    if not mask and p.get("prefix"):
+        mask = _prefix_to_netmask(p["prefix"])
+    if mask and mask.isdigit() and int(mask) <= 32:
+        mask = _prefix_to_netmask(mask)
+    ns = p.get("nameservers") or ([p["gateway"]] if p.get("gateway") else ["1.1.1.1", "8.8.8.8"])
+    return {"interface": p.get("interface", ""), "address": addr, "netmask": mask,
+            "gateway": p.get("gateway", ""), "nameservers": ns}
+
+
+def resolve_network(cfg: dict):
+    """設定とホスト状態から ('dhcp', {}) か ('static', params) を返す。"""
+    net = cfg["network"]
+    mode = net.get("mode", "auto")
+    if mode == "dhcp":
+        return "dhcp", {}
+    if mode == "auto":
+        det = detect_network()
+        if det and det["address"] and det["gateway"]:
+            return "static", _finalize_static(det)
+        return "dhcp", {}
+    if mode == "static":
+        return "static", _finalize_static(net)
+    die(f"network.mode が不正: {mode}（dhcp/static/auto）")
 
 
 def hash_password(plain: str) -> str:
@@ -133,7 +241,14 @@ def default_config() -> dict:
             "timezone": "Asia/Tokyo",
         },
         "target": {"disk": "auto"},
-        "network": {"mode": "dhcp"},
+        "network": {
+            "mode": "auto",        # auto | static | dhcp
+            "interface": "",       # 以下は mode = "static" のとき使用
+            "address": "",
+            "netmask": "",
+            "gateway": "",
+            "nameservers": [],
+        },
         "host": {"hostname": "debian-vps"},
         "user": {
             "name": "admin",
@@ -292,7 +407,7 @@ def _toml_array(keys) -> str:
 
 def dump_config(cfg: dict) -> str:
     d, u, a = cfg["debian"], cfg["user"], cfg["ansible"]
-    fb, pk, ssh = cfg["firstboot"], cfg["packages"], cfg["ssh"]
+    fb, pk, ssh, n = cfg["firstboot"], cfg["packages"], cfg["ssh"], cfg["network"]
     return f"""\
 # debian-vps-bootstrap 設定ファイル
 # `bootstrap.py run -c このファイル` でこの内容に従ってインストールする。
@@ -308,8 +423,15 @@ timezone = "{d['timezone']}"
 [target]
 disk = "{cfg['target']['disk']}"               # auto で自動検出（実行時に確認あり）
 
+# ネットワーク。auto は run/check 実行時に「現在の Linux の IPv4 設定」を読み取り、
+# 取得できれば static として焼き込む（取れなければ dhcp にフォールバック）。
 [network]
-mode = "{cfg['network']['mode']}"               # 現状 dhcp のみ
+mode = "{n['mode']}"               # auto | static | dhcp
+interface = "{n['interface']}"             # mode = "static" 用（空なら自動選択）
+address = "{n['address']}"
+netmask = "{n['netmask']}"
+gateway = "{n['gateway']}"
+nameservers = {_toml_array(n['nameservers'])}
 
 [host]
 hostname = "{cfg['host']['hostname']}"
@@ -348,20 +470,44 @@ permit_root_login = {str(ssh['permit_root_login']).lower()}
 # ===========================================================================
 # preseed / firstboot 生成
 # ===========================================================================
-def build_preseed(cfg: dict, arch: str, disk: str, user_pw_hash: str) -> bytes:
+def _build_netcfg(cfg: dict, net) -> str:
+    host = cfg["host"]["hostname"]
+    mode, p = net
+    common = (
+        f"d-i netcfg/hostname string {host}\n"
+        f"d-i netcfg/get_hostname string {host}\n"
+        "d-i netcfg/get_domain string unassigned-domain\n"
+    )
+    if mode == "static":
+        ns = " ".join(p["nameservers"])
+        return (
+            "# ---- ネットワーク（稼働中の設定から静的化） -----------------------------\n"
+            "d-i netcfg/choose_interface select auto\n"
+            "d-i netcfg/disable_autoconfig boolean true\n"
+            f"d-i netcfg/get_ipaddress string {p['address']}\n"
+            f"d-i netcfg/get_netmask string {p['netmask']}\n"
+            f"d-i netcfg/get_gateway string {p['gateway']}\n"
+            f"d-i netcfg/get_nameservers string {ns}\n"
+            "d-i netcfg/confirm_static boolean true\n"
+            + common
+        )
+    return (
+        "# ---- ネットワーク（DHCP） -------------------------------------------------\n"
+        "d-i netcfg/choose_interface select auto\n"
+        + common
+    )
+
+
+def build_preseed(cfg: dict, disk: str, user_pw_hash: str, net) -> bytes:
     d, u = cfg["debian"], cfg["user"]
     include = " ".join(cfg["packages"]["include"])
+    netcfg = _build_netcfg(cfg, net)
     text = f"""\
 # ---- ロケール / キーボード -------------------------------------------------
 d-i debian-installer/locale string en_US.UTF-8
 d-i keyboard-configuration/xkb-keymap select us
 
-# ---- ネットワーク（DHCP 前提） --------------------------------------------
-d-i netcfg/choose_interface select auto
-d-i netcfg/hostname string {cfg['host']['hostname']}
-d-i netcfg/get_hostname string {cfg['host']['hostname']}
-d-i netcfg/get_domain string unassigned-domain
-
+{netcfg}
 # ---- ミラー ----------------------------------------------------------------
 d-i mirror/country string manual
 d-i mirror/http/hostname string {d['mirror_host']}
@@ -618,8 +764,17 @@ def validate_config(cfg: dict) -> list:
             errs.append(f"{who}.password_hash は \"prompt\" か crypt ハッシュ($...)であること")
     if cfg["ansible"]["enabled"] and not cfg["ansible"]["ssh_authorized_keys"]:
         errs.append("ansible.ssh_authorized_keys が空")
-    if cfg["network"]["mode"] != "dhcp":
-        errs.append("network.mode は現状 dhcp のみ対応")
+    mode = cfg["network"].get("mode", "auto")
+    if mode not in ("dhcp", "static", "auto"):
+        errs.append("network.mode は dhcp / static / auto のいずれか")
+    if mode == "static":
+        n = cfg["network"]
+        if not n.get("address"):
+            errs.append("static: network.address が必要")
+        if not n.get("gateway"):
+            errs.append("static: network.gateway が必要")
+        if not (n.get("netmask") or n.get("prefix") or "/" in n.get("address", "")):
+            errs.append("static: network.netmask か prefix（または address の /CIDR）が必要")
     return errs
 
 
@@ -699,6 +854,26 @@ def cmd_wizard(args) -> None:
     cfg["host"]["hostname"] = prompt_nonempty("ホスト名", "debian-vps")
     cfg["target"]["disk"] = prompt_nonempty("対象ディスク（auto で自動検出）", "auto")
 
+    # --- ネットワーク ---
+    print("\n現在のネットワーク構成を検出中...")
+    det = detect_network()
+    if det:
+        print(f"  検出: if={det['interface']} addr={det['address']} "
+              f"mask={det['netmask']} gw={det['gateway']} dns={det['nameservers'] or '(なし)'}")
+        print("  [1] auto   実行時(run)に現在の Linux から自動取得して静的化（推奨）")
+        print("  [2] static いま検出した値を設定ファイルに焼き込む")
+        print("  [3] dhcp   インストーラに DHCP させる")
+        choice = input("  選択 [1]: ").strip() or "1"
+        if choice == "2":
+            cfg["network"].update(mode="static", **det)
+        elif choice == "3":
+            cfg["network"]["mode"] = "dhcp"
+        else:
+            cfg["network"]["mode"] = "auto"
+    else:
+        print("  検出できませんでした。mode=auto（取得失敗時は dhcp）にします。")
+        cfg["network"]["mode"] = "auto"
+
     cfg["user"]["name"] = prompt_nonempty("メインユーザー名", "admin")
     cfg["user"]["fullname"] = prompt_nonempty("フルネーム", cfg["user"]["name"])
     cfg["user"]["ssh_authorized_keys"] = [prompt_pubkey("メインユーザーの SSH 公開鍵")]
@@ -731,7 +906,7 @@ def cmd_wizard(args) -> None:
     print(f"  sudo python3 {os.path.basename(sys.argv[0])} run   -c {out}")
 
 
-def _plan_summary(cfg: dict, arch: str, disk_note: str) -> str:
+def _plan_summary(cfg: dict, arch: str, disk_note: str, net) -> str:
     fb = cfg["firstboot"]
     actions = []
     if fb["docker"]:
@@ -742,9 +917,18 @@ def _plan_summary(cfg: dict, arch: str, disk_note: str) -> str:
         actions.append("apt: " + ", ".join(fb["apt_packages"]))
     ans = (f"{cfg['ansible']['name']} (SSH鍵/通常sudo)"
            if cfg["ansible"]["enabled"] else "（作成しない）")
+    mode, p = net
+    if mode == "static":
+        netline = (f"static {p['address']}/{_netmask_to_prefix(p['netmask'])} "
+                   f"gw {p['gateway']} dns {','.join(p['nameservers'])}")
+        if cfg["network"].get("mode") == "auto":
+            netline += "  (稼働中の Linux から自動取得)"
+    else:
+        netline = "dhcp"
     return (
         f"  Debian          : {cfg['debian']['suite']} ({arch})\n"
         f"  ホスト名        : {cfg['host']['hostname']}\n"
+        f"  ネットワーク    : {netline}\n"
         f"  対象ディスク    : {disk_note}\n"
         f"  メインユーザー  : {cfg['user']['name']} (SSH鍵のみ/sudo)\n"
         f"  ansible ユーザー: {ans}\n"
@@ -760,12 +944,13 @@ def cmd_check(args) -> None:
     cfg = load_config(args.config)
     errs = validate_config(cfg)
     arch = resolve_arch(cfg["debian"]["arch"])
+    net = resolve_network(cfg)
     disk_cfg = cfg["target"]["disk"]
     disk_note = (f"auto → 実行ホストで検出（現在の候補: {detect_disk() or '不明'}）"
                  if disk_cfg == "auto" else disk_cfg)
 
     print("=== 設定プラン ===")
-    print(_plan_summary(cfg, arch, disk_note))
+    print(_plan_summary(cfg, arch, disk_note, net))
     print()
     if errs:
         print("=== 検証エラー ===")
@@ -777,7 +962,7 @@ def cmd_check(args) -> None:
     if args.show_files:
         disk = detect_disk() if disk_cfg == "auto" else disk_cfg
         print("\n=== 生成される preseed.cfg ===")
-        print(build_preseed(cfg, arch, disk or "/dev/vda", "$6$EXAMPLE$EXAMPLE").decode())
+        print(build_preseed(cfg, disk or "/dev/vda", "$6$EXAMPLE$EXAMPLE", net).decode())
         print("=== 生成される firstboot.sh ===")
         print(build_firstboot(cfg))
 
@@ -796,6 +981,7 @@ def cmd_run(args) -> None:
         die("設定を修正してください（`check` で確認できます）。")
 
     arch = resolve_arch(cfg["debian"]["arch"])
+    net = resolve_network(cfg)
     disk = detect_disk() if cfg["target"]["disk"] == "auto" else cfg["target"]["disk"]
     if not disk:
         die("対象ディスクを自動検出できませんでした。config の target.disk を明示してください。")
@@ -813,7 +999,7 @@ def cmd_run(args) -> None:
         subprocess.run(["lsblk", "-do", "NAME,SIZE,MODEL"], check=False)
         print("------------------------------")
     print("\n以下の内容で実行します:")
-    print(_plan_summary(cfg, arch, disk))
+    print(_plan_summary(cfg, arch, disk, net))
     print(f"\n!!! {disk} の全データが消去されます。元の OS は復旧できません。!!!")
     if input(f"続行するには対象ディスク名をそのまま入力 ({disk}): ").strip() != disk:
         die("確認が一致しないため中止しました。")
@@ -841,7 +1027,7 @@ def cmd_run(args) -> None:
 
     with open(kernel_path, "wb") as fh:
         fh.write(download(f"{base}/linux"))
-    preseed = build_preseed(cfg, arch, disk, user_pw_hash)
+    preseed = build_preseed(cfg, disk, user_pw_hash, net)
     info("preseed を埋め込んだ initrd を生成中")
     new_initrd = build_new_initrd(download(f"{base}/initrd.gz"), preseed, payload)
     with open(initrd_path, "wb") as fh:

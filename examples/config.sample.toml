@@ -16,8 +16,18 @@ timezone = "Asia/Tokyo"
 [target]
 disk = "auto"                    # auto で自動検出（/dev/vda → sda → nvme0n1）。実行時に確認あり
 
+# ネットワーク。
+#   auto   … run/check 実行時に「稼働中の Linux の IPv4 設定」を読み取り、
+#            取得できれば静的設定として焼き込む（取れなければ dhcp にフォールバック）。
+#   static … 下の interface/address/... を使う（address は "IP/CIDR" 表記も可）。
+#   dhcp   … インストーラに DHCP させる。
 [network]
-mode = "dhcp"                    # 現状 dhcp のみ対応
+mode = "auto"
+interface = ""                   # 空なら自動選択（多くの場合これでよい）
+address = ""                     # 例: "203.0.113.10/24" または "203.0.113.10"
+netmask = ""                     # address が /CIDR でないとき。例: "255.255.255.0"
+gateway = ""                     # 例: "203.0.113.1"
+nameservers = []                 # 例: ["1.1.1.1", "8.8.8.8"]（空なら gateway を使う）
 
 [host]
 hostname = "debian-vps"

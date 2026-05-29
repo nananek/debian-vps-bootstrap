@@ -64,7 +64,7 @@ include = ["openssh-server", "sudo", "git", "curl", "ca-certificates", "gnupg", 
 [firstboot]
 docker = true
 tailscale = true                 # 導入のみ。tailnet 参加は手動 `tailscale up`
-apt_packages = ["htop", "git"]   # 追加で入れたい apt パッケージ
+apt_packages = ["htop"]          # 追加で入れたい apt パッケージ
 run = [                          # 任意の追加コマンド（順次実行・root）
   "timedatectl set-ntp true",
 ]

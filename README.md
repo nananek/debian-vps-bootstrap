@@ -114,7 +114,7 @@ include = ["openssh-server", "sudo", "git", "curl", "ca-certificates", "gnupg"]
 [firstboot]               # 初回起動後に行う処理
 docker = true
 tailscale = true          # 導入のみ。参加は手動 `tailscale up`
-apt_packages = ["htop", "git"]
+apt_packages = ["htop"]
 run = ["timedatectl set-ntp true"]
 
 [ssh]

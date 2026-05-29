@@ -7,76 +7,122 @@ Debian (trixie) で丸ごと上書きする**ためのスクリプトです。
 「コンパネに ISO マウント機能が無い」「レスキューイメージが古い／使えない」
 といった環境で、現用の Linux 上から直接 Debian をクリーンインストールできます。
 
+設定（TOML）と実行を分離してあるので、いきなり `kexec` で事故ることなく、
+設定を書き出して中身を確認してから流せます。
+
 > [!WARNING]
-> このスクリプトは**実行した VPS のディスク全体を消去します**。元の OS は
-> 復旧できません。必ず上書きしてよいサーバー上で、バックアップを取った上で
-> 実行してください。
+> `run` は**実行した VPS のディスク全体を消去します**。元の OS は復旧できません。
+> 必ず上書きしてよいサーバー上で、バックアップを取った上で実行してください。
 
 ## 特徴
 
+- **設定と実行を分離**した 3 サブコマンド（`wizard` / `check` / `run`）。
 - **Python3 標準ライブラリのみで完結。** ダウンロードは `urllib`、initrd の
   解凍／再圧縮は `gzip`、cpio への追記は自前の newc 実装で行うため、
   `wget` / `cpio` / `gzip` などを別途入れる必要がありません。
   外部コマンド依存は実質 `kexec` だけです。
-- **その `kexec` も冒頭で自動導入。** `kexec` が無ければ
+- **その `kexec` も `run` 時に自動導入。** 無ければ
   apt / dnf / yum / zypper / pacman を自動判別して `kexec-tools` を入れます。
-- **対話プロンプトで構成を決定。** ホスト名・ユーザー名・パスワード・SSH 公開鍵・
-  対象ディスクを実行時に入力します（決め打ちなし）。
+- **設定ファイル（TOML）で構成を管理。** 初期パッケージ・Docker/Tailscale の
+  有無・追加コマンドなどを宣言的に指定でき、再現性があります。
 - **アーキテクチャ自動判別**（amd64 / arm64）。
 - **インストール後の初回起動で Docker / Tailscale を自動導入**し、
   ansible ユーザーを別途作成します（ネットワークと apt が完全に動く状態で
   実行するため堅牢）。
 
-## 動作の流れ
+## サブコマンド
 
-```
-稼働中の OS（root で実行）
-  │  1. kexec-tools を確認／導入
-  │  2. プロンプトで構成を入力（ユーザー・鍵・ディスク等）
-  │  3. netboot の kernel / initrd.gz をダウンロード
-  │  4. preseed.cfg と payload を initrd に埋め込み
-  │  5. kexec -l → kexec -e
-  ▼
-Debian インストーラ（無人インストール）
-  │  ディスクを LVM で初期化し Debian をインストール
-  │  late_command で first-boot サービスと sshd 設定を仕込む
-  ▼
-インストール済み Debian（初回起動）
-  │  firstboot.service が一度だけ実行:
-  │    - メインユーザーの SSH 公開鍵を設置
-  │    - Docker を公式 apt リポジトリから導入
-  │    - Tailscale を導入（参加は手動）
-  │    - ansible ユーザーを別途作成
-  ▼
-運用開始
-```
-
-## 使い方
-
-上書きしたい VPS に root（または sudo 可能なユーザー）でログインし、
-スクリプトを取得して実行します。
+| コマンド | 説明 |
+| --- | --- |
+| `wizard` | 対話で質問し、設定ファイル（TOML）を書き出す。**インストールはしない**。 |
+| `check`  | 設定を検証し、生成される preseed / firstboot を確認するドライラン。 |
+| `run`    | 設定を読み込みインストールを実行する。**破壊的**（最終確認あり）。 |
 
 ```sh
-curl -fsSLO https://raw.githubusercontent.com/nananek/debian-vps-bootstrap/main/bootstrap.py
-sudo python3 bootstrap.py
+python3 bootstrap.py wizard -o config.toml        # 設定を作る
+python3 bootstrap.py check  -c config.toml         # 確認
+python3 bootstrap.py check  -c config.toml --show-files  # 生成物も表示
+sudo python3 bootstrap.py run -c config.toml       # 実行（ディスクを上書き）
 ```
 
-プロンプトで以下を入力します。
+## クイックスタート
 
-| 項目 | 説明 |
-| --- | --- |
-| ホスト名 | 新システムのホスト名（既定: `debian-vps`） |
-| メインユーザー名 | 対話的に使う管理ユーザー |
-| メインユーザーのパスワード | **VNC ローカルコンソール救済用**（SSH では使わない） |
-| メインユーザーの SSH 公開鍵 | SSH ログインはこの鍵のみ。`@/path/to/key.pub` でファイル指定可 |
-| ansible ユーザー名 | 自動化用ユーザー（既定: `ansible`） |
-| ansible のパスワード | sudo 用 |
-| ansible の SSH 公開鍵 | ansible ユーザーの鍵 |
-| 上書き対象ディスク | 自動検出した候補を確認して入力（`/dev/vda` 等） |
+1. 手元のマシン、または対象 VPS 上で設定を作成します。
 
-最後に対象ディスク名をそのまま打ち込む確認を経て、`kexec` で
-インストーラへ遷移します。インストール完了後は自動で再起動し、
-Debian が起動します。
+   ```sh
+   curl -fsSLO https://raw.githubusercontent.com/nananek/debian-vps-bootstrap/main/bootstrap.py
+   python3 bootstrap.py wizard
+   ```
+
+   `examples/config.sample.toml` を直接コピーして手で編集しても構いません。
+
+2. 内容を確認します。
+
+   ```sh
+   python3 bootstrap.py check -c config.toml --show-files
+   ```
+
+3. 上書きしたい VPS に `bootstrap.py` と `config.toml` を置き、root で実行します。
+
+   ```sh
+   sudo python3 bootstrap.py run -c config.toml
+   ```
+
+   最後に対象ディスク名をそのまま打ち込む確認を経て、`kexec` でインストーラへ
+   遷移します。完了後は自動で再起動し Debian が起動します。
+
+## 設定ファイル（TOML）
+
+サンプル: [`examples/config.sample.toml`](examples/config.sample.toml)（フル版）、
+[`examples/config.minimal.toml`](examples/config.minimal.toml)（最小版）。
+省略した項目はすべて既定値が使われます。
+
+```toml
+[debian]
+suite = "trixie"          # コードネーム
+arch = "auto"             # auto | amd64 | arm64
+timezone = "Asia/Tokyo"
+
+[target]
+disk = "auto"             # auto で自動検出（/dev/vda → sda → nvme0n1）
+
+[host]
+hostname = "debian-vps"
+
+[user]                    # メインユーザー: SSH は公開鍵のみ
+name = "admin"
+password_hash = "prompt"  # "prompt" で実行時入力 / "$6$..." でハッシュ直指定
+ssh_authorized_keys = ["ssh-ed25519 AAAA... admin@laptop"]
+
+[ansible]                 # 自動化用ユーザー（初回起動後に別途作成）
+enabled = true
+name = "ansible"
+password_hash = "prompt"
+ssh_authorized_keys = ["ssh-ed25519 AAAA... ansible@control"]
+
+[packages]                # d-i 段で入れる最小パッケージ
+include = ["openssh-server", "sudo", "curl", "ca-certificates", "gnupg"]
+
+[firstboot]               # 初回起動後に行う処理
+docker = true
+tailscale = true          # 導入のみ。参加は手動 `tailscale up`
+apt_packages = ["htop", "git"]
+run = ["timedatectl set-ntp true"]
+
+[ssh]
+password_authentication = false
+permit_root_login = false
+```
+
+### パスワードの扱い
+
+平文では保存しません。`password_hash` は次のいずれかです。
+
+- `"prompt"` … `run` 実行時に対話入力する（推奨）。
+- `"$6$..."` … SHA-512 crypt ハッシュを直接指定（完全無人化したい場合）。
+  生成例: `openssl passwd -6` または `mkpasswd -m sha-512`。
+
+`wizard` では「ハッシュを設定ファイルに保存するか」を選べます。
 
 ## インストールされる構成
 
@@ -84,61 +130,58 @@ Debian が起動します。
 
 - **root ログインは無効**。
 - **メインユーザー**: sudo 可能。SSH は**公開鍵のみ**
-  （`PasswordAuthentication no` / `PermitRootLogin no`）。
+  （既定で `PasswordAuthentication no` / `PermitRootLogin no`）。
   パスワードはプロバイダの VNC / ローカルコンソールから救済ログインする用途に
-  残してあります。
-- **ansible ユーザー**: 初回起動後に別途作成。SSH 公開鍵でログインし、
+  残せます。
+- **ansible ユーザー**（任意）: 初回起動後に別途作成。SSH 公開鍵でログインし、
   sudo はパスワード必須（通常 sudo）。docker グループにも追加されます。
 
-### パッケージ
+### パッケージ / 初回起動後の処理
 
-- ベース: `standard` タスク + `openssh-server sudo curl ca-certificates gnupg`
-- 初回起動後: Docker（`docker-ce` 一式 + buildx / compose プラグイン）、Tailscale
+- d-i 段: `standard` タスク + `packages.include`（`openssh-server` を含めること）。
+- 初回起動後（`firstboot.service` が一度だけ実行）:
+  - メインユーザーの SSH 公開鍵を設置
+  - `firstboot.docker = true` なら Docker（`docker-ce` 一式 + buildx / compose）
+  - `firstboot.tailscale = true` なら Tailscale（導入のみ）
+  - `firstboot.apt_packages` の追加インストール
+  - ansible ユーザーの作成
+  - `firstboot.run` の追加コマンド実行
 
 ### Tailscale
 
-パッケージのインストールと `tailscaled` の有効化までを自動で行います。
-tailnet への参加は手動です。初回起動後に SSH でログインして実行してください。
+パッケージ導入と `tailscaled` 有効化までを自動で行います。tailnet への参加は
+手動です。初回起動後に SSH でログインして実行してください。
 
 ```sh
 sudo tailscale up
 ```
 
-## 設定の変更
-
-`bootstrap.py` 冒頭の定数で主要な挙動を変えられます。
-
-| 定数 | 既定値 | 説明 |
-| --- | --- | --- |
-| `SUITE` | `trixie` | Debian コードネーム |
-| `TIMEZONE` | `Asia/Tokyo` | 新システムのタイムゾーン |
-| `MIRROR_HOST` / `MIRROR_DIR` | `deb.debian.org` `/debian` | apt ミラー |
-| `KERNEL_CMDLINE` | `... console=ttyS0,115200 console=tty0 ...` | インストーラのカーネル引数 |
-
 ## 前提・制約
 
-- **ネットワークは DHCP 前提**です。静的 IP 固定の VPS では preseed の
-  `netcfg` 段で停止するため、`netcfg/get_ipaddress` 等を preseed に追記する
-  必要があります。
+- **ネットワークは DHCP 前提**です（`network.mode = "dhcp"`）。静的 IP 固定の
+  VPS では preseed の `netcfg` 段で停止します（静的対応は今後）。
 - 対応アーキテクチャは **amd64 / arm64**。
-- 稼働中の OS で `/proc/sys/vm/drop_caches` が書ける（= 一般的な Linux）こと。
+- `run` は root 権限と、`/proc/sys/vm/drop_caches` が書ける一般的な Linux が前提。
+- 設定の読み込み（`check` / `run`）は Python 3.11+ の `tomllib` を使います。
+  それ未満の Python でも動くよう、簡易 TOML パーサをフォールバックとして同梱
+  しています（サンプル設定で `tomllib` との出力一致を検証済み）。
 - 万一インストーラが途中で停止しても操作できるよう、プロバイダの
-  VNC / シリアルコンソールに入れる状態で実行することを強く推奨します。
+  VNC / シリアルコンソールに入れる状態で `run` することを強く推奨します。
+  カーネルには `console=ttyS0,115200 console=tty0` の両方を渡しています。
 
 ## トラブルシュート
 
 - **インストール完了後に SSH で入れない**: メインユーザーは公開鍵のみです。
   VNC コンソールからメインユーザーのパスワードでログインし、鍵を確認してください。
-- **Docker / Tailscale / ansible ユーザーが無い**: 初回起動時の処理ログを
-  確認します。
+- **Docker / Tailscale / ansible ユーザーが無い**: 初回起動時の処理ログを確認します。
 
   ```sh
   sudo cat /var/log/firstboot.log
   sudo systemctl status firstboot.service
   ```
 
-- **対象ディスクを間違えそう**: 実行前に `lsblk` の一覧が表示され、最後に
-  ディスク名そのものを打たせる確認があります。
+- **本当に流す前に中身を見たい**: `check --show-files` で、生成される
+  `preseed.cfg` と `firstboot.sh` をそのまま表示できます。
 
 ## ライセンス
 

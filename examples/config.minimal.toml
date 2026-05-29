@@ -1,0 +1,16 @@
+# debian-vps-bootstrap 設定サンプル（最小版）
+# 省略した項目はすべて既定値が使われる（既定値は examples/config.sample.toml 参照）。
+# これだけでも動く最小構成の例。
+
+[host]
+hostname = "myvps"
+
+[user]
+name = "admin"
+ssh_authorized_keys = [
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEEXAMPLEEXAMPLEEXAMPLE admin@laptop",
+]
+
+# ansible ユーザーが不要なら無効化できる
+[ansible]
+enabled = false

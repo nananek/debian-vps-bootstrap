@@ -1,0 +1,59 @@
+# debian-vps-bootstrap 設定サンプル（フル版）
+# すべての項目を明示した例。`bootstrap.py run -c config.toml` で使う。
+#
+# パスワードは平文では保存しない:
+#   - "prompt"  … run 実行時に対話入力する（推奨）
+#   - "$6$..."  … SHA-512 crypt ハッシュを直接指定（無人化したい場合）
+#     生成例: openssl passwd -6   /   mkpasswd -m sha-512
+
+[debian]
+suite = "trixie"                 # Debian コードネーム
+arch = "auto"                    # auto | amd64 | arm64
+mirror_host = "deb.debian.org"
+mirror_dir = "/debian"
+timezone = "Asia/Tokyo"
+
+[target]
+disk = "auto"                    # auto で自動検出（/dev/vda → sda → nvme0n1）。実行時に確認あり
+
+[network]
+mode = "dhcp"                    # 現状 dhcp のみ対応
+
+[host]
+hostname = "debian-vps"
+
+# メインユーザー: SSH は公開鍵のみ。パスワードは VNC/ローカルコンソール救済用。
+[user]
+name = "admin"
+fullname = "Admin User"
+password_hash = "prompt"
+ssh_authorized_keys = [
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEEXAMPLEEXAMPLEEXAMPLE admin@laptop",
+]
+
+# 自動化用ユーザー: 初回起動後に「別途」作成。SSH 鍵 + 通常 sudo（パスワード必須）。
+[ansible]
+enabled = true
+name = "ansible"
+password_hash = "prompt"
+ssh_authorized_keys = [
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEEXAMPLEEXAMPLEEXAMPLE ansible@control",
+]
+
+# d-i 段で入れる最小パッケージ（standard タスク + これら）。
+# openssh-server は外さないこと（外すと再インストール後にログインできなくなる）。
+[packages]
+include = ["openssh-server", "sudo", "curl", "ca-certificates", "gnupg", "vim", "tmux"]
+
+# 初回起動後（ネットワーク・apt が動く状態）に一度だけ行う処理。
+[firstboot]
+docker = true
+tailscale = true                 # 導入のみ。tailnet 参加は手動 `tailscale up`
+apt_packages = ["htop", "git"]   # 追加で入れたい apt パッケージ
+run = [                          # 任意の追加コマンド（順次実行・root）
+  "timedatectl set-ntp true",
+]
+
+[ssh]
+password_authentication = false  # SSH パスワード認証を無効化（鍵のみ）
+permit_root_login = false

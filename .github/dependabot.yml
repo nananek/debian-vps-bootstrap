@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # このリポジトリの「依存」は GitHub Actions だけ（Python は stdlib のみ）。
+  # 使用アクションに更新やセキュリティ修正が出たら週次で PR を上げる。
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      # 細切れ PR を避け、まとめて1本にする。
+      actions:
+        patterns:
+          - "*"

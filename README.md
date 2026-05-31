@@ -71,6 +71,56 @@ sudo tailscale up                  # Tailscale は参加だけ手動
 
 ---
 
+## 投入方法（kexec / GRUB / ISO）
+
+`config.toml`・preseed・firstboot のロジックはすべて `bootstrap.py` に一本化されており、
+「どうやってインストーラを起動するか」だけが違う 3 つの入口があります。環境に合わせて選びます。
+
+| 方法 | コマンド | 向いている環境 |
+|------|----------|----------------|
+| **kexec**（既定） | `sudo python3 bootstrap.py run -c config.toml` | ISO マウント不可の VPS。稼働中 OS から直接遷移。 |
+| **GRUB 登録** | `sudo python3 grub-install.py -c config.toml` | `kexec` が Secure Boot / lockdown で弾かれる、または画面を見ながら流したいベアメタル。 |
+| **preseed ISO** | `sudo bash make-preseed-iso.sh` | USB から焼いて起動するベアメタル。 |
+
+### GRUB 登録版（`grub-install.py`）
+
+kexec する代わりに、GRUB メニュー項目と `/boot/debian-vps-bootstrap/{vmlinuz,initrd.gz}` を
+作って `update-grub` します。**デフォルトのブート対象は変えません**。再起動して
+`Debian … installer (preseed, WIPES <disk>)` を選んだときだけ無人インストールが走ります。
+
+```sh
+sudo python3 grub-install.py -c config.toml   # 取り消し: sudo rm -rf /etc/grub.d/42_debian_vps_bootstrap /boot/debian-vps-bootstrap && sudo update-grub
+```
+
+- `kexec_file_load failed: Required key not available` で詰まる環境（Secure Boot 有効 /
+  `kexec_load_disabled=1` / lockdown）でも、SB を無効化すれば通常 GRUB 起動で投入できます。
+- kexec 後はフレームバッファが死んで VGA に何も出ないことが多いですが、GRUB 起動なら
+  メニューも installer も画面に出ます（ヘッドレス機にモニタを挿して確認したいとき向き）。
+- メニューが隠れている場合は起動時に **ESC(UEFI) / Shift(BIOS)** を押し続けてください。
+- `/boot` が独立パーティションかどうかは自動判定してパスを調整します。
+
+### preseed ISO 版（`make-preseed-iso.sh`）
+
+Debian netinst ISO の initrd（text / graphical 両方）に preseed を焼き込み、全ブート項目に
+`auto=true priority=critical` を注入した ISO を作ります。USB へ書いて起動すると放置で
+無人インストールが始まります。
+
+```sh
+sudo bash make-preseed-iso.sh                                   # SRC は repo 直下の netinst を自動検出
+sudo SRC=in.iso OUT=out.iso TARGET_DISK=/dev/nvme0n1 bash make-preseed-iso.sh
+```
+
+- **インストール先は `auto` 不可**です（USB が `/dev/sda` に見えると USB 自体を消しかねない）。
+  `TARGET_DISK=` か `config.toml` の `[target] disk` に**実デバイスを明示**してください。
+- 出力 ISO には preseed（パスワードハッシュ入り）が含まれるため `chmod 0600` されます。
+  USB への `dd` 時は `lsblk -do NAME,SIZE,MODEL,TRAN` で書き込み先（`TRAN=usb`）を必ず確認。
+
+> [!NOTE]
+> GRUB / ISO 版は `xorriso`（ISO 版のみ）と GRUB 環境が前提です。`detect_disk()` の自動検出は
+> 複数ディスク機では意図しないドライブを掴みうるので、ベアメタルでは `target.disk` を明示するのが安全です。
+
+---
+
 ## 設定ファイル（TOML）
 
 省略した項目はすべて既定値になります。最小例は

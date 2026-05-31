@@ -780,6 +780,32 @@ def build_sshd_hardening(cfg: dict) -> bytes:
     ).encode()
 
 
+def build_grub_fragment(title: str, cmdline: str, kernel_path: str, initrd_path: str) -> str:
+    """/etc/grub.d/ 断片（update-grub のたびに menuentry を再生成する実行スクリプト）。
+
+    kernel_path / initrd_path は GRUB から見たパス（$root 基準）。`search --file` で
+    カーネルを置いたデバイスを $root に設定するので、/boot が独立パーティションか否かで
+    先頭の "/boot" の有無が変わる点は呼び出し側が解決して渡す。
+    """
+    return f"""\
+#!/bin/sh
+exec tail -n +3 $0
+# debian-vps-bootstrap が生成。手で編集しても update-grub で上書きされる。
+menuentry "{title}" --class debian --class gnu-linux --class gnu --class os {{
+    insmod gzio
+    insmod part_gpt
+    insmod part_msdos
+    insmod lvm
+    insmod ext2
+    search --no-floppy --file --set=root {kernel_path}
+    echo 'Loading debian-installer kernel ...'
+    linux {kernel_path} {cmdline}
+    echo 'Loading preseeded initrd ...'
+    initrd {initrd_path}
+}}
+"""
+
+
 # ===========================================================================
 # cpio (newc) 操作 ― 標準ライブラリのみ
 # ===========================================================================

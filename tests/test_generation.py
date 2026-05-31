@@ -166,5 +166,37 @@ class TestSshdAndService(unittest.TestCase):
         self.assertIn("WantedBy=multi-user.target", out)
 
 
+class TestBuildGrubFragment(unittest.TestCase):
+    def _frag(self, **kw):
+        kw.setdefault("title", "Debian trixie installer (preseed, WIPES /dev/nvme0n1)")
+        kw.setdefault("cmdline", "auto=true priority=critical console=tty0")
+        kw.setdefault("kernel_path", "/boot/debian-vps-bootstrap/vmlinuz")
+        kw.setdefault("initrd_path", "/boot/debian-vps-bootstrap/initrd.gz")
+        return bootstrap.build_grub_fragment(**kw)
+
+    def test_grub_d_script_header(self):
+        out = self._frag()
+        # /etc/grub.d/ 断片は実行スクリプト。先頭2行を読み飛ばして本体を吐く定型。
+        self.assertTrue(out.startswith("#!/bin/sh\n"))
+        self.assertIn("exec tail -n +3 $0", out)
+
+    def test_contains_title_cmdline_paths(self):
+        out = self._frag()
+        self.assertIn('menuentry "Debian trixie installer (preseed, WIPES /dev/nvme0n1)"', out)
+        self.assertIn("linux /boot/debian-vps-bootstrap/vmlinuz auto=true priority=critical "
+                      "console=tty0", out)
+        self.assertIn("initrd /boot/debian-vps-bootstrap/initrd.gz", out)
+        self.assertIn("search --no-floppy --file --set=root /boot/debian-vps-bootstrap/vmlinuz",
+                      out)
+
+    def test_separate_boot_partition_path(self):
+        # /boot が独立パーティションのときは先頭 "/boot" を含まないパスを渡す運用。
+        out = self._frag(kernel_path="/debian-vps-bootstrap/vmlinuz",
+                         initrd_path="/debian-vps-bootstrap/initrd.gz")
+        self.assertIn("linux /debian-vps-bootstrap/vmlinuz", out)
+        self.assertIn("--set=root /debian-vps-bootstrap/vmlinuz", out)
+        self.assertNotIn("/boot/debian-vps-bootstrap", out)
+
+
 if __name__ == "__main__":
     unittest.main()

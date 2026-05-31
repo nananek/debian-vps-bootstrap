@@ -178,10 +178,10 @@ step "5. 結果"
 ls -lh "$OUT"
 cat <<EOF
 
-完了。USB へ書き込み（書き込み先デバイス名は必ず確認すること）:
-  lsblk -do NAME,SIZE,MODEL,TRAN          # TRAN=usb が書き込み先(USB)
-  sudo dd if="$OUT" of=/dev/sdX bs=4M status=progress oflag=sync   # /dev/sdX は要置換
+完了。USB へ書き込み（安全確認付きの burn-iso.sh 推奨）:
+  sudo ISO="$OUT" DEV=/dev/sdX bash "$REPO/burn-iso.sh"   # /dev/sdX は USB。removable 判定で内蔵ディスクは弾く
+  # 手で焼くなら: lsblk -do NAME,SIZE,MODEL,TRAN で TRAN=usb を確認のうえ dd
 
-!! of= を取り違えるとそのディスクが消えます。USB とインストール先($TARGET_DISK)を混同しないこと。
+!! 書き込み先(USB)とインストール先($TARGET_DISK)を混同しないこと。
 !! 起動して放置すると 5 秒後に無人インストールが始まり、$TARGET_DISK を全消去します。
 EOF

@@ -113,7 +113,13 @@ sudo SRC=in.iso OUT=out.iso TARGET_DISK=/dev/nvme0n1 bash make-preseed-iso.sh
 - **インストール先は `auto` 不可**です（USB が `/dev/sda` に見えると USB 自体を消しかねない）。
   `TARGET_DISK=` か `config.toml` の `[target] disk` に**実デバイスを明示**してください。
 - 出力 ISO には preseed（パスワードハッシュ入り）が含まれるため `chmod 0600` されます。
-  USB への `dd` 時は `lsblk -do NAME,SIZE,MODEL,TRAN` で書き込み先（`TRAN=usb`）を必ず確認。
+
+USB への書き込みは安全確認付きの **`burn-iso.sh`** が使えます（リムーバブル判定で内蔵ディスクを
+弾く・サイズ確認・アンマウント・書き込み後ハッシュ照合）:
+
+```sh
+sudo ISO=out-preseed.iso DEV=/dev/sdb bash burn-iso.sh   # DEV 既定は /dev/sda
+```
 
 > [!NOTE]
 > GRUB / ISO 版は `xorriso`（ISO 版のみ）と GRUB 環境が前提です。`detect_disk()` の自動検出は
